@@ -1,0 +1,28 @@
+services:
+  stem:
+    build:
+      context: .
+      dockerfile: stem/Dockerfile
+      args:
+        STEM_USER: ${STEM_USER:-dev}
+        STEM_UID: ${STEM_UID:-1000}
+        STEM_GID: ${STEM_GID:-1000}
+        TZ: ${TZ:-UTC}
+        APOGEE_VERSION: ${APOGEE_VERSION:-}
+    image: hatch-stem:local
+    container_name: stem
+    hostname: stem
+    ports:
+      - "2222:22"
+    env_file:
+      - .env
+    volumes:
+      - ./:/workspace
+      - stem_home:/home/${STEM_USER:-dev}
+      - ${SSH_AUTH_KEYS_PATH:-./authorized_keys}:/home/${STEM_USER:-dev}/.ssh/authorized_keys:ro
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
+
+volumes:
+  stem_home:
