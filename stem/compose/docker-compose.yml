@@ -38,9 +38,18 @@ services:
       STEM_GID: ${STEM_GID}
 
     volumes:
+      # Your “machine workspace” (pick what you want to see at /workspace)
       - ${STEM_WORKSPACE}:/workspace
-      - stem_home:/home/${STEM_USER}
+
+      # Persistent home (stable mount point regardless of username)
+      - stem_home:/home
+
+      # Optional: persist SSH host keys so they don't change on recreate
+      - stem_etc_ssh:/etc/ssh
+
+      # Authorized keys content (must exist on host)
       - ${STEM_AUTH_KEYS_FILE}:/opt/ssh/authorized_keys:ro
+
 
     working_dir: /workspace
     tty: true
@@ -51,3 +60,4 @@ services:
 
 volumes:
   stem_home:
+  stem_etc_ssh:
