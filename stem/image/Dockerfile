@@ -2,9 +2,9 @@ FROM ubuntu:24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG TZ=America/Los_Angeles
-
-# Optional: install your Rust app at build time
 ARG APOGEE_VERSION=
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # -----------------------------
 # Base packages
@@ -88,15 +88,15 @@ ENV LANG=en_US.UTF-8 \
 # -----------------------------
 RUN set -eux; \
   if command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1; then \
-    ln -s "$(command -v fdfind)" /usr/local/bin/fd; \
+    ln -sf "$(command -v fdfind)" /usr/local/bin/fd; \
   fi; \
   if command -v batcat >/dev/null 2>&1 && ! command -v bat >/dev/null 2>&1; then \
-    ln -s "$(command -v batcat)" /usr/local/bin/bat; \
+    ln -sf "$(command -v batcat)" /usr/local/bin/bat; \
   fi
 
 # -----------------------------
-# Create a stable default user (dev)
-# Runtime user remap is handled by entrypoint.
+# Stable default user (dev)
+# Runtime user remap happens in entrypoint.
 # -----------------------------
 RUN set -eux; \
   if ! id -u dev >/dev/null 2>&1; then \
@@ -129,30 +129,58 @@ RUN set -eux; \
   rm -rf /var/lib/apt/lists/*
 
 # -----------------------------
-# Rust toolchain (system-wide) + optional Apogee install
+# Rust toolchain (system-wide)
+# - install into /opt/rust/*
+# - use curl backend (more reliable in docker builds)
+# - retry whole install on transient network failures
 # -----------------------------
-ENV RUSTUP_HOME=/opt/rust/rustup \
-    CARGO_HOME=/opt/rust/cargo
+ENV RUSTUP_HOME=/opt/rust/rustup
 ENV PATH=/opt/rust/cargo/bin:${PATH}
+ENV RUSTUP_USE_CURL=1
+ENV RUSTUP_MAX_RETRIES=10
 
+RUN set -eux; \
+  export CARGO_HOME=/opt/rust/cargo; \
+  for i in 1 2 3 4 5; do \
+    rm -rf /opt/rust/rustup /opt/rust/cargo; \
+    mkdir -p /opt/rust/rustup /opt/rust/cargo; \
+    curl -fsSL --retry 10 --retry-delay 2 --retry-connrefused https://sh.rustup.rs -o /tmp/rustup.sh; \
+    if sh /tmp/rustup.sh -y --profile minimal --no-modify-path; then \
+      break; \
+    fi; \
+    echo "rustup install failed (attempt $i/5). retrying..." >&2; \
+    sleep $((i * 5)); \
+  done; \
+  rm -f /tmp/rustup.sh; \
+  /opt/rust/cargo/bin/cargo --version
+
+# Make Rust available to all login shells (SSH included)
 RUN set -eux; \
   cat >/etc/profile.d/10-stem-rust.sh <<'EOF'
+# stem: system-wide tool paths
 export RUSTUP_HOME=/opt/rust/rustup
-export CARGO_HOME=/opt/rust/cargo
-export PATH="$CARGO_HOME/bin:$PATH"
+
+# Add system cargo to PATH if not there
+case ":$PATH:" in
+  *":/opt/rust/cargo/bin:"*) ;;
+  *) PATH="$PATH:/opt/rust/cargo/bin" ;;
+esac
+
+export PATH
 EOF
 
+
+
+# Optional: install apogee globally (into /opt/rust/cargo/bin) at build time
 RUN set -eux; \
-  mkdir -p "${RUSTUP_HOME}" "${CARGO_HOME}"; \
-  curl -fsSL --retry 10 --retry-delay 2 --retry-connrefused https://sh.rustup.rs -o /tmp/rustup.sh; \
-  sh /tmp/rustup.sh -y --profile minimal; \
-  rm -f /tmp/rustup.sh; \
-  cargo --version; \
-  if [ -n "${APOGEE_VERSION}" ]; then \
-    for i in 1 2 3 4 5; do cargo install apogee --version "${APOGEE_VERSION}" && break || sleep 3; done; \
+  export CARGO_HOME=/opt/rust/cargo; \
+  if [[ -n "${APOGEE_VERSION}" ]]; then \
+    for i in 1 2 3 4 5; do /opt/rust/cargo/bin/cargo install apogee --version "${APOGEE_VERSION}" && break || sleep 3; done; \
   else \
-    for i in 1 2 3 4 5; do cargo install apogee && break || sleep 3; done; \
-  fi
+    for i in 1 2 3 4 5; do /opt/rust/cargo/bin/cargo install apogee && break || sleep 3; done; \
+  fi; \
+  # reduce image size (safe)
+  rm -rf /opt/rust/cargo/registry /opt/rust/cargo/git || true
 
 # -----------------------------
 # Starship
@@ -162,10 +190,10 @@ RUN set -eux; \
   starship --version
 
 # -----------------------------
-# SSH base
+# SSH base + host keys directory
 # -----------------------------
 RUN set -eux; \
-  mkdir -p /var/run/sshd /etc/ssh/sshd_config.d /opt/ssh
+  mkdir -p /var/run/sshd /etc/ssh/sshd_config.d /etc/ssh/host_keys /opt/ssh
 
 COPY image/entrypoint.sh /usr/local/bin/stem-entrypoint
 RUN chmod +x /usr/local/bin/stem-entrypoint

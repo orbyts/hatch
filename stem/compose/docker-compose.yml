@@ -4,9 +4,6 @@ services:
       context: ..
       dockerfile: image/Dockerfile
       args:
-        STEM_USER: ${STEM_USER}
-        STEM_UID: ${STEM_UID}
-        STEM_GID: ${STEM_GID}
         TZ: ${TZ}
         APOGEE_VERSION: ${APOGEE_VERSION:-}
 
@@ -15,7 +12,6 @@ services:
     hostname: ${STEM_HOSTNAME}
     restart: unless-stopped
 
-    # keep high so it never collides with host ssh
     ports:
       - "${STEM_SSH_PORT:-22222}:22"
 
@@ -30,6 +26,8 @@ services:
       STEM_SSH_PASSWORD_AUTH: ${STEM_SSH_PASSWORD_AUTH}
       STEM_SSH_PASSWORD: ${STEM_SSH_PASSWORD}
 
+      STEM_ALLOW_ROOT_LOGIN: ${STEM_ALLOW_ROOT_LOGIN:-0}
+
       BINDU_REPO: ${BINDU_REPO}
       BINDU_REF: ${BINDU_REF}
 
@@ -38,26 +36,22 @@ services:
       STEM_GID: ${STEM_GID}
 
     volumes:
-      # Your “machine workspace” (pick what you want to see at /workspace)
       - ${STEM_WORKSPACE}:/workspace
 
-      # Persistent home (stable mount point regardless of username)
+      # Persistent home
       - stem_home:/home
 
-      # Optional: persist SSH host keys so they don't change on recreate
-      - stem_etc_ssh:/etc/ssh
+      # Persist host keys only (safe)
+      - stem_ssh_host_keys:/etc/ssh/host_keys
 
-      # Authorized keys content (must exist on host)
+      # Authorized keys from host
       - ${STEM_AUTH_KEYS_FILE}:/opt/ssh/authorized_keys:ro
-
 
     working_dir: /workspace
     tty: true
     stdin_open: true
-
-    # explicitly use default docker0 bridge
     network_mode: bridge
 
 volumes:
   stem_home:
-  stem_etc_ssh:
+  stem_ssh_host_keys:
