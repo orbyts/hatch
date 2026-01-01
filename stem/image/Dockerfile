@@ -72,6 +72,13 @@ RUN if command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1; the
       ln -s "$(command -v fdfind)" /usr/local/bin/fd; \
     fi
 
+# ADD THIS near your fd symlink block
+RUN set -eux; \
+  if command -v batcat >/dev/null 2>&1 && ! command -v bat >/dev/null 2>&1; then \
+    ln -s "$(command -v batcat)" /usr/local/bin/bat; \
+  fi
+
+
 RUN set -eux; \
     EXISTING_G="$(getent group "${STEM_GID}" | cut -d: -f1 || true)"; \
     if [ -z "${EXISTING_G}" ]; then groupadd --gid "${STEM_GID}" "${STEM_USER}"; fi; \
@@ -112,12 +119,38 @@ ENV RUSTUP_HOME=/opt/rust/rustup \
 ENV PATH=${CARGO_HOME}/bin:${PATH}
 
 RUN set -eux; \
+  cat >/etc/profile.d/10-stem-rust.sh <<'EOF'
+export RUSTUP_HOME=/opt/rust/rustup
+export CARGO_HOME=/opt/rust/cargo
+export PATH="$CARGO_HOME/bin:$PATH"
+EOF
+
+RUN set -eux; \
     mkdir -p "${RUSTUP_HOME}" "${CARGO_HOME}"; \
     curl -fsSL --retry 10 --retry-delay 2 --retry-connrefused https://sh.rustup.rs -o /tmp/rustup.sh; \
     sh /tmp/rustup.sh -y --profile minimal; \
     rm -f /tmp/rustup.sh; \
     "${CARGO_HOME}/bin/cargo" --version; \
     for i in 1 2 3 4 5; do "${CARGO_HOME}/bin/cargo" install apogee && break || sleep 3; done
+
+# Starship prompt
+RUN set -eux; \
+  curl -fsSL https://starship.rs/install.sh | sh -s -- -y; \
+  starship --version
+
+ARG APOGEE_VERSION=
+
+RUN set -eux; \
+    mkdir -p "${RUSTUP_HOME}" "${CARGO_HOME}"; \
+    curl -fsSL --retry 10 --retry-delay 2 --retry-connrefused https://sh.rustup.rs -o /tmp/rustup.sh; \
+    sh /tmp/rustup.sh -y --profile minimal; \
+    rm -f /tmp/rustup.sh; \
+    "${CARGO_HOME}/bin/cargo" --version; \
+    if [ -n "${APOGEE_VERSION}" ]; then \
+      for i in 1 2 3 4 5; do "${CARGO_HOME}/bin/cargo" install apogee --version "${APOGEE_VERSION}" && break || sleep 3; done; \
+    else \
+      for i in 1 2 3 4 5; do "${CARGO_HOME}/bin/cargo" install apogee && break || sleep 3; done; \
+    fi
 
 # SSH base + /opt/ssh mountpoint directory
 RUN set -eux; \

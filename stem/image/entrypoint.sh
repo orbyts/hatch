@@ -16,6 +16,13 @@ log() { echo "[stem] $*" >&2; }
 HOME_DIR="/home/${STEM_USER}"
 CONFIG_DIR="${HOME_DIR}/.config"
 SSH_DIR="${HOME_DIR}/.ssh"
+PROFILE_FILE="${HOME_DIR}/.profile"
+BASHRC_FILE="${HOME_DIR}/.bashrc"
+CACHE_DIR="${HOME_DIR}/.cache"
+STATE_DIR="${HOME_DIR}/.local/state"
+DATA_DIR="${HOME_DIR}/.local/share"
+
+
 
 # --- ensure group exists (by GID) ---
 EXISTING_G="$(getent group "${STEM_GID}" | cut -d: -f1 || true)"
@@ -49,6 +56,85 @@ fi
 # --- create dirs / perms in home ---
 install -d -o "${STEM_UID}" -g "${STEM_GID}" -m 755 "${CONFIG_DIR}"
 install -d -o "${STEM_UID}" -g "${STEM_GID}" -m 700 "${SSH_DIR}"
+install -d -o "${STEM_UID}" -g "${STEM_GID}" -m 700 "${CACHE_DIR}"
+install -d -o "${STEM_UID}" -g "${STEM_GID}" -m 700 "${STATE_DIR}"
+install -d -o "${STEM_UID}" -g "${STEM_GID}" -m 755 "${DATA_DIR}"
+
+# --- shell init bootstrap (because home is a volume and starts empty) ---
+
+PROFILE_FILE="${HOME_DIR}/.profile"
+BASHRC_FILE="${HOME_DIR}/.bashrc"
+
+# 1) Ensure ~/.profile exists and sources ~/.bashrc for interactive shells
+if [[ ! -f "${PROFILE_FILE}" ]]; then
+  cat > "${PROFILE_FILE}" <<'EOF'
+# ~/.profile (stem bootstrap)
+
+# If running bash, and interactive, source ~/.bashrc
+if [ -n "$BASH_VERSION" ]; then
+  case $- in
+    *i*) [ -f "$HOME/.bashrc" ] && . "$HOME/.bashrc" ;;
+  esac
+fi
+EOF
+  chown "${STEM_UID}:${STEM_GID}" "${PROFILE_FILE}"
+  chmod 644 "${PROFILE_FILE}"
+fi
+
+# 2) Ensure ~/.bashrc exists (your host-parity template)
+if [[ ! -f "${BASHRC_FILE}" ]]; then
+  cat > "${BASHRC_FILE}" <<'EOF'
+# ~/.bashrc
+# stem default (volume-safe)
+
+# Only run for interactive shells
+case $- in
+  *i*) ;;
+  *) return ;;
+esac
+
+# -------------------------------------------------------------
+# Basics
+# -------------------------------------------------------------
+export HISTCONTROL=ignoreboth
+shopt -s histappend
+export HISTSIZE=10000
+export HISTFILESIZE=20000
+shopt -s checkwinsize
+
+# Optional: your personal aliases live here (not managed)
+if [ -f "$HOME/.bash_aliases" ]; then
+  . "$HOME/.bash_aliases"
+fi
+
+# Optional: drop-in directory (not managed)
+if [ -d "$HOME/.bashrc.d" ]; then
+  for f in "$HOME/.bashrc.d/"*.sh; do
+    [ -r "$f" ] && . "$f"
+  done
+fi
+
+# -------------------------------------------------------------
+# Rust/cargo env (container installs rust under /opt/rust)
+# -------------------------------------------------------------
+if [ -f "/etc/profile.d/10-stem-rust.sh" ]; then
+  . "/etc/profile.d/10-stem-rust.sh"
+fi
+
+# -------------------------------------------------------------
+# Apogee
+# -------------------------------------------------------------
+if command -v apogee >/dev/null 2>&1; then
+  eval "$(apogee)"
+fi
+EOF
+
+  chown "${STEM_UID}:${STEM_GID}" "${BASHRC_FILE}"
+  chmod 644 "${BASHRC_FILE}"
+fi
+
+# 3) Ensure ~/.bashrc.d exists
+install -d -o "${STEM_UID}" -g "${STEM_GID}" -m 755 "${HOME_DIR}/.bashrc.d"
 
 # --- Bindu “install into” ~/.config (copy contents) ---
 MARKER="${CONFIG_DIR}/.stem.bindu_installed"
@@ -117,6 +203,18 @@ fi
 chmod 700 "${SSH_DIR}" || true
 chmod 600 "${AUTH_OUT}" || true
 chown -R "${STEM_UID}:${STEM_GID}" "${SSH_DIR}" || true
+
+# starship expects to be able to create its log dir
+install -d -o "${STEM_UID}" -g "${STEM_GID}" -m 700 "${CACHE_DIR}/starship"
+
+# If the volume ever came in with root ownership, repair just the common dirs
+chown -R "${STEM_UID}:${STEM_GID}" \
+  "${CONFIG_DIR}" \
+  "${SSH_DIR}" \
+  "${CACHE_DIR}" \
+  "${HOME_DIR}/.local" \
+  2>/dev/null || true
+
 
 # sshd config
 sed -i 's/^\s*#\?\s*PubkeyAuthentication.*/PubkeyAuthentication yes/' /etc/ssh/sshd_config
