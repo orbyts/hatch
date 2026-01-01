@@ -58,7 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends ncurses-bin \
   && rm -rf /var/lib/apt/lists/*
 
-COPY stem/terminfo/xterm-ghostty.terminfo /tmp/xterm-ghostty.terminfo
+COPY image/terminfo/xterm-ghostty.terminfo /tmp/xterm-ghostty.terminfo
 RUN tic -x /tmp/xterm-ghostty.terminfo && rm -f /tmp/xterm-ghostty.terminfo
 
 RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo ${TZ} > /etc/timezone \
@@ -125,7 +125,7 @@ RUN set -eux; \
     mkdir -p /etc/ssh/sshd_config.d; \
     mkdir -p /opt/ssh
 
-COPY stem/entrypoint.sh /usr/local/bin/stem-entrypoint
+COPY image/entrypoint.sh /usr/local/bin/stem-entrypoint
 RUN chmod +x /usr/local/bin/stem-entrypoint
 
 EXPOSE 22

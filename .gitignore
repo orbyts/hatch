@@ -1,11 +1,11 @@
 .DS_Store
 **/.DS_Store
-./authorized_keys
-authorized_keys
+# never commit real env files
 .env
-env.example
-.env.example
 .env.*
-*.log
-.vscode/
-.idea/
+!.env.example
+
+# never commit any authorized keys
+authorized_keys
+**/authorized_keys
+**/*.pub

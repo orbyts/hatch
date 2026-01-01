@@ -1,0 +1,53 @@
+services:
+  stem:
+    build:
+      context: ..
+      dockerfile: image/Dockerfile
+      args:
+        STEM_USER: ${STEM_USER}
+        STEM_UID: ${STEM_UID}
+        STEM_GID: ${STEM_GID}
+        TZ: ${TZ}
+        APOGEE_VERSION: ${APOGEE_VERSION:-}
+
+    image: hatch-stem:local
+    container_name: ${STEM_CONTAINER_NAME}
+    hostname: ${STEM_HOSTNAME}
+    restart: unless-stopped
+
+    # keep high so it never collides with host ssh
+    ports:
+      - "${STEM_SSH_PORT:-22222}:22"
+
+    env_file:
+      - .env
+
+    environment:
+      TZ: ${TZ}
+      TERM: ${TERM}
+      COLORTERM: ${COLORTERM}
+
+      STEM_SSH_PASSWORD_AUTH: ${STEM_SSH_PASSWORD_AUTH}
+      STEM_SSH_PASSWORD: ${STEM_SSH_PASSWORD}
+
+      BINDU_REPO: ${BINDU_REPO}
+      BINDU_REF: ${BINDU_REF}
+
+      STEM_USER: ${STEM_USER}
+      STEM_UID: ${STEM_UID}
+      STEM_GID: ${STEM_GID}
+
+    volumes:
+      - ${STEM_WORKSPACE}:/workspace
+      - stem_home:/home/${STEM_USER}
+      - ${STEM_AUTH_KEYS_FILE}:/opt/ssh/authorized_keys:ro
+
+    working_dir: /workspace
+    tty: true
+    stdin_open: true
+
+    # explicitly use default docker0 bridge
+    network_mode: bridge
+
+volumes:
+  stem_home:
