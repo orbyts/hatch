@@ -1,6 +1,10 @@
 .DS_Store
 **/.DS_Store
+./authorized_keys
+authorized_keys
 .env
+env.example
+.env.example
 .env.*
 *.log
 .vscode/

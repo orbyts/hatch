@@ -9,15 +9,12 @@ if [[ -z "${BINDU_REPO}" ]]; then
   exit 0
 fi
 
-dest="${HOME}/.local/share/bindu"
-mkdir -p "${HOME}/.local/share"
+cfg="${HOME}/.config"
+mkdir -p "${cfg}"
 
-if [[ ! -d "${dest}/.git" ]]; then
-  git clone --depth=1 --branch "${BINDU_REF}" "${BINDU_REPO}" "${dest}"
-else
-  git -C "${dest}" fetch --depth=1 origin "${BINDU_REF}"
-  git -C "${dest}" checkout "${BINDU_REF}"
-  git -C "${dest}" pull --ff-only
-fi
+tmp="$(mktemp -d)"
+git clone --depth=1 --branch "${BINDU_REF}" "${BINDU_REPO}" "${tmp}"
+cp -a "${tmp}/." "${cfg}/"
+rm -rf "${tmp}"
 
-echo "Bindu cloned to: ${dest}"
+echo "Bindu installed into: ${cfg}"
