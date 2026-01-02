@@ -157,16 +157,14 @@ RUN set -eux; \
 # Make Rust available to all login shells (SSH included)
 RUN set -eux; \
   cat >/etc/profile.d/10-stem-rust.sh <<'EOF'
-# stem: system-wide tool paths
+# stem: system-wide tool paths fallback
 export RUSTUP_HOME=/opt/rust/rustup
 
-# Add system cargo to PATH if not there
+# Append to the END of PATH so user/local bins always take priority
 case ":$PATH:" in
   *":/opt/rust/cargo/bin:"*) ;;
-  *) PATH="$PATH:/opt/rust/cargo/bin" ;;
+  *) export PATH="$PATH:/opt/rust/cargo/bin" ;;
 esac
-
-export PATH
 EOF
 
 

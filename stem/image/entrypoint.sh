@@ -133,31 +133,28 @@ case $- in
     *) return ;;
 esac
 
-# 2. Load System Tool Paths First (Rust system-wide, etc.)
+# 2. Reset Shell Hash
+# Ensures that if we installed a new version of a tool, bash looks for it again
+hash -r
+
+# 3. Load System Tool Paths
+# We add these to the END (append) so they are the lowest priority fallback
 if [ -f "/etc/profile.d/10-stem-rust.sh" ]; then
     . "/etc/profile.d/10-stem-rust.sh"
 fi
 
-# 3. User-Specific PATH overrides (THE PRIORITY ZONE)
-# This ensures $HOME binaries always come BEFORE /usr or /opt
-export PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+# 4. User-Specific PATH overrides
+# Prepend user paths so they take top priority
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$HOME/bin:$PATH"
 
-# Cargo/Rust user-space
-if [ -d "$HOME/.cargo/bin" ]; then
-    export PATH="$HOME/.cargo/bin:$PATH"
-fi
-
-# NPM/Node user-space (if using prefix or default global)
-if [ -d "$HOME/.npm-global/bin" ]; then
-    export PATH="$HOME/.npm-global/bin:$PATH"
-fi
-
-# 4. Load Apogee (Now it will find the $HOME version first)
+# 5. Load Apogee
+# Since apogee handles its own path emitting, we call it last.
+# If apogee is found in $HOME/.cargo/bin, it will be used over /opt/rust
 if command -v apogee >/dev/null 2>&1; then
     eval "$(apogee)"
 fi
 
-# 5. Generic Includes
+# 6. Generic Includes
 [ -f "$HOME/.bash_aliases" ] && . "$HOME/.bash_aliases"
 if [ -d "$HOME/.bashrc.d" ]; then
     for f in "$HOME/.bashrc.d/"*.sh; do [ -r "$f" ] && . "$f"; done
