@@ -1,0 +1,20 @@
+services:
+  stem:
+    build: .
+    container_name: stem
+    hostname: stem
+    ports:
+      - "22222:22"
+    environment:
+      STEM_USER: "suhail"
+      STEM_UID: "1000"
+      STEM_GID: "1000"
+      STEM_PASSWORD: "change-me"   # or load from an env_file
+    volumes:
+      - stem_home:/home
+      - ./authorized_keys:/opt/ssh/authorized_keys:ro
+
+    restart: unless-stopped
+
+volumes:
+  stem_home:
