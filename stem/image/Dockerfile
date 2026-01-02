@@ -3,26 +3,38 @@ FROM phusion/baseimage:noble-1.0.2
 ARG DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Minimal useful tooling (add more later)
 RUN set -eux; \
   apt-get update; \
   apt-get install -y --no-install-recommends \
     sudo ca-certificates curl git \
     openssh-server \
+    ncurses-bin ncurses-term \
   ; \
   apt-get clean; \
   rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Enable sshd (baseimage ships sshd as a runit service, disabled by default)
 RUN rm -f /etc/service/sshd/down
-# Optionally regenerate host keys at build time (safe); baseimage also provides scripts for this.
-RUN /etc/my_init.d/00_regen_ssh_host_keys.sh || true
+
+# -----------------------------
+# Terminfo (Ghostty)
+# -----------------------------
+COPY image/terminfo/xterm-ghostty.terminfo /tmp/xterm-ghostty.terminfo
+RUN set -eux; \
+  tic -x -o /usr/share/terminfo /tmp/xterm-ghostty.terminfo; \
+  rm -f /tmp/xterm-ghostty.terminfo
+
+# Host keys will live in /etc/ssh/keys (backed by a volume)
+RUN set -eux; \
+  install -d -m 700 /etc/ssh/keys; \
+  sed -i \
+    -e 's|^HostKey /etc/ssh/ssh_host_ed25519_key|HostKey /etc/ssh/keys/ssh_host_ed25519_key|g' \
+    -e 's|^HostKey /etc/ssh/ssh_host_rsa_key|HostKey /etc/ssh/keys/ssh_host_rsa_key|g' \
+    -e 's|^HostKey /etc/ssh/ssh_host_ecdsa_key|HostKey /etc/ssh/keys/ssh_host_ecdsa_key|g' \
+    /etc/ssh/sshd_config
 
 RUN set -eux; \
   cat >/etc/profile.d/99-user-bins-first.sh <<'EOF'
-# Put per-user bins first (cargo, pip/uv, npm-prefix, bun, deno, go, pnpm, yarn).
-# Runs late (99-*) so it wins over other PATH edits.
-
 path_prepend_unique() {
   local d="$1"
   [ -d "$d" ] || return 0
@@ -38,7 +50,6 @@ path_prepend_unique() {
 }
 
 if [ -n "${HOME:-}" ]; then
-  # Order here matters: earlier items end up *more* preferred.
   for d in \
     "$HOME/.local/bin" \
     "$HOME/.cargo/bin" \
@@ -58,11 +69,8 @@ export PATH
 EOF
 RUN chmod 644 /etc/profile.d/99-user-bins-first.sh
 
-# Startup scripts (run by /sbin/my_init in lexicographic order)
 COPY my_init.d/ /etc/my_init.d/
 RUN chmod +x /etc/my_init.d/*.sh
 
 EXPOSE 22
-
-# baseimage expects this
 CMD ["/sbin/my_init"]

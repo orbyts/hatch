@@ -2,8 +2,12 @@
 **/.DS_Store
 # never commit real env files
 .env
+.env.local
 .env.*
+.env.*.local
 !.env.example
+# optional place to store key material locally (not in repo)
+.secrets/
 
 # never commit any authorized keys
 authorized_keys

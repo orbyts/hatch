@@ -1,20 +1,40 @@
 services:
   stem:
-    build: .
-    container_name: stem
-    hostname: stem
+    build:
+      context: .
+      dockerfile: image/Dockerfile
+    container_name: ${STEM_CONTAINER_NAME:-stem}
+    hostname: ${STEM_HOSTNAME:-stem}
+
+    # docker compose auto-loads .env in this folder, but this makes it explicit
+    env_file:
+      - .env
+
     ports:
-      - "22222:22"
+      - "${STEM_SSH_PORT:-22222}:22"
+
     environment:
-      STEM_USER: "suhail"
-      STEM_UID: "1000"
-      STEM_GID: "1000"
-      STEM_PASSWORD: "change-me"   # or load from an env_file
+      STEM_USER: "${STEM_USER:-dev}"
+      STEM_UID: "${STEM_UID:-1000}"
+      STEM_GID: "${STEM_GID:-1000}"
+      STEM_PASSWORD: "${STEM_PASSWORD:-change-me}"
+
     volumes:
+      # Persist /home (user installs survive)
       - stem_home:/home
-      - ./authorized_keys:/opt/ssh/authorized_keys:ro
+
+      # Persist SSH host keys (stops known_hosts churn)
+      - stem_ssh_hostkeys:/etc/ssh/keys
+
+      # Persist “injected” authorized_keys across container recreation
+      - stem_ssh_state:/opt/stem/ssh
+
+      # This can be a single *.pub line, or a full authorized_keys file with multiple lines.
+      - "${STEM_AUTH_KEYS_PATH}:/opt/ssh/authorized_keys:ro"
 
     restart: unless-stopped
 
 volumes:
   stem_home:
+  stem_ssh_hostkeys:
+  stem_ssh_state:

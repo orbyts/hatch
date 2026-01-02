@@ -153,14 +153,26 @@ ensure_account_unlocked() {
 
 
 install_authorized_keys() {
-  install -d -m 700 -o "${STEM_UID}" -g "${STEM_GID}" "${SSH_DIR}"
-  install -m 600 -o "${STEM_UID}" -g "${STEM_GID}" /dev/null "${AUTH_KEYS}" || true
+  local persist_dir="/opt/stem/ssh"
+  local persist_keys="${persist_dir}/authorized_keys"
+  local injected="/opt/ssh/authorized_keys"
 
-  if [[ -f /opt/ssh/authorized_keys ]]; then
-    log "Installing authorized_keys from /opt/ssh/authorized_keys"
-    install -m 600 -o "${STEM_UID}" -g "${STEM_GID}" /opt/ssh/authorized_keys "${AUTH_KEYS}"
+  install -d -m 700 -o "${STEM_UID}" -g "${STEM_GID}" "${SSH_DIR}"
+  install -d -m 700 "${persist_dir}"
+
+  # If user provided a key file via bind mount, persist it
+  if [[ -f "${injected}" && -s "${injected}" ]]; then
+    log "Persisting provided authorized_keys from ${injected} -> ${persist_keys}"
+    cp -f "${injected}" "${persist_keys}"
+    chmod 600 "${persist_keys}"
+  fi
+
+  # Use persisted keys if they exist
+  if [[ -f "${persist_keys}" && -s "${persist_keys}" ]]; then
+    log "Installing authorized_keys from persisted store"
+    install -m 600 -o "${STEM_UID}" -g "${STEM_GID}" "${persist_keys}" "${AUTH_KEYS}"
   else
-    log "No /opt/ssh/authorized_keys provided; SSH login will fail unless you add keys."
+    log "No authorized_keys found (neither injected nor persisted); SSH key login will fail."
   fi
 }
 
