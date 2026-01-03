@@ -14,9 +14,14 @@ AUTH_KEYS="${SSH_DIR}/authorized_keys"
 ensure_group_user() {
   mkdir -p /home
 
-  # Ensure group exists by GID
+  # Ensure group exists by GID; if missing, create one (name may need to avoid conflicts)
   if ! getent group "${STEM_GID}" >/dev/null 2>&1; then
-    groupadd --gid "${STEM_GID}" "${STEM_USER}"
+    if getent group "${STEM_USER}" >/dev/null 2>&1; then
+      # Group name exists with a different GID; create a safe name
+      groupadd --gid "${STEM_GID}" "${STEM_USER}-grp"
+    else
+      groupadd --gid "${STEM_GID}" "${STEM_USER}"
+    fi
   fi
 
   # If UID already exists under a different username, rename that user to STEM_USER
@@ -25,13 +30,11 @@ ensure_group_user() {
   if [[ -n "${existing_u}" && "${existing_u}" != "${STEM_USER}" ]]; then
     log "Adopting uid=${STEM_UID}: renaming ${existing_u} -> ${STEM_USER}"
     usermod -l "${STEM_USER}" "${existing_u}" || true
-    # If a sudoers file exists under the old name, remove it
     rm -f "/etc/sudoers.d/${existing_u}" 2>/dev/null || true
   fi
 
   # Ensure user exists
   if ! id -u "${STEM_USER}" >/dev/null 2>&1; then
-    # Create with the correct home path from the start
     useradd --uid "${STEM_UID}" --gid "${STEM_GID}" -m -d "${HOME_DIR}" -s /bin/bash "${STEM_USER}"
   fi
 
@@ -41,7 +44,7 @@ ensure_group_user() {
   # Ensure home dir exists (volume-safe)
   mkdir -p "${HOME_DIR}"
 
-  # Fix passwd home path (move only if old home exists and target doesn't)
+  # Fix passwd home path (avoid moves when a volume mount is present)
   local current_home
   current_home="$(getent passwd "${STEM_USER}" | cut -d: -f6 || true)"
 
@@ -50,7 +53,6 @@ ensure_group_user() {
       log "Moving home ${current_home} -> ${HOME_DIR}"
       usermod -d "${HOME_DIR}" -m "${STEM_USER}" || usermod -d "${HOME_DIR}" "${STEM_USER}"
     else
-      # Old home missing or target already exists (common with /home volume mounts)
       log "Setting home to ${HOME_DIR} (no move; current_home=${current_home:-<empty>})"
       usermod -d "${HOME_DIR}" "${STEM_USER}" || true
     fi
@@ -58,27 +60,85 @@ ensure_group_user() {
 
   # Ensure sudo rights
   usermod -aG sudo "${STEM_USER}" || true
-  echo "${STEM_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/${STEM_USER}"
-  chmod 0440 "/etc/sudoers.d/${STEM_USER}"
+  install -m 0440 /dev/null "/etc/sudoers.d/${STEM_USER}"
+  printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${STEM_USER}" > "/etc/sudoers.d/${STEM_USER}"
 }
 
-repair_home_ownership_if_needed() {
-  # If the home comes from a volume, it may be root-owned.
-  if [[ -d "${HOME_DIR}" ]]; then
-    local uid_now
-    uid_now="$(stat -c '%u' "${HOME_DIR}" 2>/dev/null || echo "")"
-    if [[ -n "${uid_now}" && "${uid_now}" != "${STEM_UID}" ]]; then
-      log "Repairing ownership under ${HOME_DIR} (was uid=${uid_now}, want uid=${STEM_UID})"
-      chown -R "${STEM_UID}:${STEM_GID}" "${HOME_DIR}" 2>/dev/null || true
+ensure_account_unlocked() {
+  # With UsePAM=yes, a locked account blocks *all* auth methods (including pubkey)
+  local status
+  status="$(passwd -S "${STEM_USER}" 2>/dev/null | awk '{print $2}' || true)"
+
+  if [[ "${status}" == "L" ]]; then
+    log "Account ${STEM_USER} is locked; unlocking (required for pubkey login)"
+
+    if [[ -n "${STEM_PASSWORD:-}" ]]; then
+      echo "${STEM_USER}:${STEM_PASSWORD}" | chpasswd
+    else
+      local pw
+      pw="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
+      echo "${STEM_USER}:${pw}" | chpasswd
     fi
+
+    passwd -u "${STEM_USER}" >/dev/null 2>&1 || usermod -U "${STEM_USER}" || true
   fi
 }
 
-write_shell_files_always() {
-  # Make sure the directory exists BEFORE writing files into it
-  install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}"
+# Create/repair dirs that matter for user-installed tools
+ensure_user_dirs() {
+  local dirs=(
+    "${HOME_DIR}"
+    "${HOME_DIR}/.ssh"
+    "${HOME_DIR}/.cargo"
+    "${HOME_DIR}/.cargo/bin"
+    "${HOME_DIR}/.config"
+    "${HOME_DIR}/.local"
+    "${HOME_DIR}/.local/bin"
+    "${HOME_DIR}/.cache"
+    "${HOME_DIR}/.bashrc.d"
+  )
 
-  cat > "${HOME_DIR}/.profile" <<'EOF'
+  for d in "${dirs[@]}"; do
+    if [[ -d "${d}" ]]; then
+      # If top dir owner differs, repair subtree
+      local uid_now
+      uid_now="$(stat -c '%u' "${d}" 2>/dev/null || echo "")"
+      if [[ -n "${uid_now}" && "${uid_now}" != "${STEM_UID}" ]]; then
+        chown -R "${STEM_UID}:${STEM_GID}" "${d}" 2>/dev/null || true
+      fi
+    else
+      case "${d}" in
+        */.ssh)        install -d -m 700 -o "${STEM_UID}" -g "${STEM_GID}" "${d}" ;;
+        */.bashrc.d)   install -d -m 700 -o "${STEM_UID}" -g "${STEM_GID}" "${d}" ;;
+        *)             install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${d}" ;;
+      esac
+    fi
+  done
+}
+
+ensure_user_cargo_env() {
+  local cargo_env="${HOME_DIR}/.cargo/env"
+
+  if [[ ! -f "${cargo_env}" ]]; then
+    cat > "${cargo_env}" <<'EOF'
+# ~/.cargo/env (stem)
+case ":$PATH:" in
+  *":$HOME/.cargo/bin:"*) ;;
+  *) export PATH="$HOME/.cargo/bin:$PATH" ;;
+esac
+EOF
+  fi
+
+  chown "${STEM_UID}:${STEM_GID}" "${cargo_env}"
+  chmod 644 "${cargo_env}"
+}
+
+write_shell_files() {
+  # Write to temp then install with correct ownership/perms
+  local tmp
+
+  tmp="$(mktemp)"
+  cat > "${tmp}" <<'EOF'
 # ~/.profile (stem)
 # Make interactive bash login shells source ~/.bashrc
 if [ -n "$BASH_VERSION" ]; then
@@ -87,8 +147,27 @@ if [ -n "$BASH_VERSION" ]; then
   esac
 fi
 EOF
+  install -m 0644 -o "${STEM_UID}" -g "${STEM_GID}" "${tmp}" "${HOME_DIR}/.profile"
+  rm -f "${tmp}"
 
-  cat > "${HOME_DIR}/.bashrc" <<'EOF'
+  tmp="$(mktemp)"
+  cat > "${tmp}" <<'EOF'
+# ~/.bash_profile (stem)
+# Ensure system profile scripts run for SSH logins
+if [ -f /etc/profile ]; then
+  . /etc/profile
+fi
+
+# Keep user profile behavior consistent
+if [ -f "$HOME/.profile" ]; then
+  . "$HOME/.profile"
+fi
+EOF
+  install -m 0644 -o "${STEM_UID}" -g "${STEM_GID}" "${tmp}" "${HOME_DIR}/.bash_profile"
+  rm -f "${tmp}"
+
+  tmp="$(mktemp)"
+  cat > "${tmp}" <<'EOF'
 # ~/.bashrc
 # Managed by stem
 
@@ -118,39 +197,61 @@ if [ -f /etc/profile.d/99-user-bins-first.sh ]; then
   . /etc/profile.d/99-user-bins-first.sh
 fi
 
+# VM-style cargo PATH
+if [ -f "$HOME/.cargo/env" ]; then
+  . "$HOME/.cargo/env"
+fi
+
 if command -v apogee >/dev/null 2>&1; then
   eval "$(apogee)"
 fi
 EOF
-
-  install -d -m 700 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.bashrc.d"
-  chown "${STEM_UID}:${STEM_GID}" "${HOME_DIR}/.profile" "${HOME_DIR}/.bashrc"
-  chmod 644 "${HOME_DIR}/.profile" "${HOME_DIR}/.bashrc"
+  install -m 0644 -o "${STEM_UID}" -g "${STEM_GID}" "${tmp}" "${HOME_DIR}/.bashrc"
+  rm -f "${tmp}"
 }
 
-ensure_account_unlocked() {
-  # With UsePAM=yes, a locked account blocks *all* auth methods (including pubkey)
-  local status
-  status="$(passwd -S "${STEM_USER}" 2>/dev/null | awk "{print \$2}" || true)"
+install_bindu_if_requested() {
+  : "${BINDU_REPO:=}"
+  : "${BINDU_REF:=main}"
+  : "${BINDU_FORCE:=0}"
 
-  if [[ "${status}" == "L" ]]; then
-    log "Account ${STEM_USER} is locked; unlocking (required for pubkey login)"
+  if [[ -z "${BINDU_REPO}" ]]; then
+    log "BINDU_REPO not set; skipping bindu."
+    return 0
+  fi
 
-    # If a password is provided, set it and unlock cleanly
-    if [[ -n "${STEM_PASSWORD:-}" ]]; then
-      echo "${STEM_USER}:${STEM_PASSWORD}" | chpasswd
-      passwd -u "${STEM_USER}" >/dev/null 2>&1 || usermod -U "${STEM_USER}" || true
-    else
-      # No password provided: set a random one so the account can be unlocked
-      # (key auth will work; password fallback just becomes unknown)
-      local pw
-      pw="$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 24)"
-      echo "${STEM_USER}:${pw}" | chpasswd
-      passwd -u "${STEM_USER}" >/dev/null 2>&1 || usermod -U "${STEM_USER}" || true
+  local cfg="${HOME_DIR}/.config"
+  local marker="${cfg}/.bindu_installed"
+
+  install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${cfg}"
+
+  if [[ -f "${marker}" && "${BINDU_FORCE}" != "1" ]]; then
+    log "Bindu already installed (${marker}); skipping."
+    return 0
+  fi
+
+  if [[ "${BINDU_FORCE}" != "1" ]]; then
+    local non_marker
+    non_marker="$(find "${cfg}" -mindepth 1 -maxdepth 1 ! -name '.bindu_installed' -print -quit 2>/dev/null || true)"
+    if [[ -n "${non_marker}" ]]; then
+      log "~/.config not empty; skipping bindu (set BINDU_FORCE=1 to overwrite)."
+      return 0
     fi
   fi
-}
 
+  log "Installing bindu into ${cfg} (repo=${BINDU_REPO}, ref=${BINDU_REF})"
+
+  su - "${STEM_USER}" -c "
+    set -euo pipefail
+    tmp=\$(mktemp -d)
+    git clone --depth=1 --branch \"${BINDU_REF}\" \"${BINDU_REPO}\" \"\$tmp\"
+    cp -a \"\$tmp/.\" \"${cfg}/\"
+    rm -rf \"\$tmp\"
+    date -Iseconds > \"${marker}\"
+  "
+
+  chown -R "${STEM_UID}:${STEM_GID}" "${cfg}" 2>/dev/null || true
+}
 
 install_authorized_keys() {
   local persist_dir="/opt/stem/ssh"
@@ -160,17 +261,17 @@ install_authorized_keys() {
   install -d -m 700 -o "${STEM_UID}" -g "${STEM_GID}" "${SSH_DIR}"
   install -d -m 700 "${persist_dir}"
 
-  # If user provided a key file via bind mount, persist it
   if [[ -f "${injected}" && -s "${injected}" ]]; then
     log "Persisting provided authorized_keys from ${injected} -> ${persist_keys}"
     cp -f "${injected}" "${persist_keys}"
     chmod 600 "${persist_keys}"
   fi
 
-  # Use persisted keys if they exist
   if [[ -f "${persist_keys}" && -s "${persist_keys}" ]]; then
     log "Installing authorized_keys from persisted store"
     install -m 600 -o "${STEM_UID}" -g "${STEM_GID}" "${persist_keys}" "${AUTH_KEYS}"
+    chmod 700 "${SSH_DIR}"
+    chmod 600 "${AUTH_KEYS}"
   else
     log "No authorized_keys found (neither injected nor persisted); SSH key login will fail."
   fi
@@ -178,8 +279,10 @@ install_authorized_keys() {
 
 ensure_group_user
 ensure_account_unlocked
-repair_home_ownership_if_needed
-write_shell_files_always
+ensure_user_dirs
+ensure_user_cargo_env
+write_shell_files
+install_bindu_if_requested
 install_authorized_keys
 
 exit 0

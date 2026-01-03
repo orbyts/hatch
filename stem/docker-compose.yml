@@ -3,10 +3,10 @@ services:
     build:
       context: .
       dockerfile: image/Dockerfile
+
     container_name: ${STEM_CONTAINER_NAME:-stem}
     hostname: ${STEM_HOSTNAME:-stem}
 
-    # docker compose auto-loads .env in this folder, but this makes it explicit
     env_file:
       - .env
 
@@ -19,22 +19,22 @@ services:
       STEM_GID: "${STEM_GID:-1000}"
       STEM_PASSWORD: "${STEM_PASSWORD:-change-me}"
 
+      BINDU_REPO: "${BINDU_REPO:-}"
+      BINDU_REF: "${BINDU_REF:-main}"
+      BINDU_FORCE: "${BINDU_FORCE:-0}"
+
     volumes:
-      # Persist /home (user installs survive)
-      - stem_home:/home
-
-      # Persist SSH host keys (stops known_hosts churn)
-      - stem_ssh_hostkeys:/etc/ssh/keys
-
-      # Persist “injected” authorized_keys across container recreation
-      - stem_ssh_state:/opt/stem/ssh
-
-      # This can be a single *.pub line, or a full authorized_keys file with multiple lines.
+      - home:/home/${STEM_USER:-dev}
+      - sshkeys:/etc/ssh/keys
+      - sshstate:/opt/stem/ssh
       - "${STEM_AUTH_KEYS_PATH}:/opt/ssh/authorized_keys:ro"
 
     restart: unless-stopped
 
 volumes:
-  stem_home:
-  stem_ssh_hostkeys:
-  stem_ssh_state:
+  home:
+    external: true
+  sshkeys:
+    external: true
+  sshstate:
+    external: true
