@@ -14,14 +14,22 @@ AUTH_KEYS="${SSH_DIR}/authorized_keys"
 ensure_group_user() {
   mkdir -p /home
 
-  # Ensure group exists by GID; if missing, create one (name may need to avoid conflicts)
-  if ! getent group "${STEM_GID}" >/dev/null 2>&1; then
+  # Track the group name that corresponds to STEM_GID
+  local PRIMARY_GROUP_NAME=""
+
+  # If a group with STEM_GID exists already, capture its name
+  PRIMARY_GROUP_NAME="$(getent group "${STEM_GID}" | cut -d: -f1 || true)"
+
+  # Otherwise, create a group with STEM_GID
+  if [[ -z "${PRIMARY_GROUP_NAME}" ]]; then
     if getent group "${STEM_USER}" >/dev/null 2>&1; then
       # Group name exists with a different GID; create a safe name
-      groupadd --gid "${STEM_GID}" "${STEM_USER}-grp"
+      PRIMARY_GROUP_NAME="${STEM_USER}-grp"
     else
-      groupadd --gid "${STEM_GID}" "${STEM_USER}"
+      PRIMARY_GROUP_NAME="${STEM_USER}"
     fi
+
+    groupadd --gid "${STEM_GID}" "${PRIMARY_GROUP_NAME}"
   fi
 
   # If UID already exists under a different username, rename that user to STEM_USER
@@ -33,12 +41,12 @@ ensure_group_user() {
     rm -f "/etc/sudoers.d/${existing_u}" 2>/dev/null || true
   fi
 
-  # Ensure user exists
+  # Ensure user exists (use the actual group name for the gid we prepared)
   if ! id -u "${STEM_USER}" >/dev/null 2>&1; then
-    useradd --uid "${STEM_UID}" --gid "${STEM_GID}" -m -d "${HOME_DIR}" -s /bin/bash "${STEM_USER}"
+    useradd --uid "${STEM_UID}" --gid "${PRIMARY_GROUP_NAME}" -m -d "${HOME_DIR}" -s /bin/bash "${STEM_USER}"
   fi
 
-  # Ensure primary group matches STEM_GID
+  # Ensure primary group is STEM_GID (in case user existed already)
   usermod -g "${STEM_GID}" "${STEM_USER}" || true
 
   # Ensure home dir exists (volume-safe)
