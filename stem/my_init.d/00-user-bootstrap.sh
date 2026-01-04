@@ -84,21 +84,39 @@ ensure_account_unlocked() {
   fi
 }
 
-# Create/repair dirs that matter for user-installed tools
+# Create/repair dirs that matter for user-installed tools + XDG paths
 ensure_user_dirs() {
   local dirs=(
     "${HOME_DIR}"
     "${HOME_DIR}/.ssh"
+
+    # cargo (user installs)
     "${HOME_DIR}/.cargo"
     "${HOME_DIR}/.cargo/bin"
+
+    # config
     "${HOME_DIR}/.config"
+
+    # XDG base dirs (needed by nvim, mason, treesitter, etc.)
     "${HOME_DIR}/.local"
     "${HOME_DIR}/.local/bin"
+    "${HOME_DIR}/.local/share"
+    "${HOME_DIR}/.local/state"
+
+    # caches (nvim uses this heavily)
     "${HOME_DIR}/.cache"
+
+    # your shell include dir
     "${HOME_DIR}/.bashrc.d"
   )
 
   for d in "${dirs[@]}"; do
+    if [[ -e "${d}" && ! -d "${d}" ]]; then
+      # Rare edge: file exists where a dir should be. Don't delete, just warn.
+      log "WARNING: ${d} exists but is not a directory; skipping."
+      continue
+    fi
+
     if [[ -d "${d}" ]]; then
       # If top dir owner differs, repair subtree
       local uid_now
@@ -106,6 +124,13 @@ ensure_user_dirs() {
       if [[ -n "${uid_now}" && "${uid_now}" != "${STEM_UID}" ]]; then
         chown -R "${STEM_UID}:${STEM_GID}" "${d}" 2>/dev/null || true
       fi
+
+      # Fix common permission gotchas for key dirs (without being heavy-handed)
+      case "${d}" in
+        */.ssh)      chmod 700 "${d}" 2>/dev/null || true ;;
+        */.bashrc.d) chmod 700 "${d}" 2>/dev/null || true ;;
+        *)           : ;;
+      esac
     else
       case "${d}" in
         */.ssh)        install -d -m 700 -o "${STEM_UID}" -g "${STEM_GID}" "${d}" ;;
@@ -114,6 +139,13 @@ ensure_user_dirs() {
       esac
     fi
   done
+
+  # Neovim expects ~/.local/state and will create ~/.local/state/nvim itself,
+  # but ensuring the parent exists + is owned avoids the permission error.
+  # Also create these common nvim dirs so first launch is smoother.
+  install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.local/state/nvim" || true
+  install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.local/share/nvim" || true
+  install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.cache/nvim" || true
 }
 
 ensure_user_cargo_env() {
@@ -253,6 +285,36 @@ install_bindu_if_requested() {
   chown -R "${STEM_UID}:${STEM_GID}" "${cfg}" 2>/dev/null || true
 }
 
+bootstrap_neovim_if_configured() {
+  # Run once per persisted home volume
+  local marker_dir="${HOME_DIR}/.local/state/stem"
+  local marker="${marker_dir}/nvim_bootstrapped"
+
+  install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${marker_dir}"
+
+  # Only if nvim exists + config exists + not already done
+  command -v nvim >/dev/null 2>&1 || return 0
+  [[ -d "${HOME_DIR}/.config/nvim" ]] || return 0
+  [[ -f "${marker}" ]] && return 0
+
+  log "Bootstrapping Neovim plugins (lazy/mason/treesitter) for ${STEM_USER}..."
+
+  sudo -u "${STEM_USER}" -H bash -lc '
+    set -euo pipefail
+
+    # Headless bootstrap that won’t hard-fail if a command isn’t defined
+    nvim --headless \
+      "+lua if vim.fn.exists(\":Lazy\")==2 then vim.cmd(\"Lazy! sync\") end" \
+      "+lua if vim.fn.exists(\":MasonUpdate\")==2 then vim.cmd(\"MasonUpdate\") end" \
+      "+lua if vim.fn.exists(\":MasonToolsInstall\")==2 then vim.cmd(\"MasonToolsInstall\") end" \
+      "+lua if vim.fn.exists(\":TSUpdateSync\")==2 then vim.cmd(\"TSUpdateSync\") end" \
+      "+qa"
+  ' || log "Neovim bootstrap had errors (non-fatal). You can re-run inside nvim."
+
+  date -Iseconds > "${marker}"
+  chown "${STEM_UID}:${STEM_GID}" "${marker}"
+}
+
 install_authorized_keys() {
   local persist_dir="/opt/stem/ssh"
   local persist_keys="${persist_dir}/authorized_keys"
@@ -283,6 +345,7 @@ ensure_user_dirs
 ensure_user_cargo_env
 write_shell_files
 install_bindu_if_requested
+bootstrap_neovim_if_configured
 install_authorized_keys
 
 exit 0

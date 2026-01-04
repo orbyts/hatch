@@ -28,7 +28,6 @@ RUN set -eux; \
     unzip \
     gh \
     tree \
-    eza \
     gawk \
     bat \
     zoxide \
@@ -132,6 +131,22 @@ RUN set -eux; \
   rm -rf /var/lib/apt/lists/*
 
 # -----------------------------
+# eza (deb.gierens.de) -> apt-managed newer builds
+# -----------------------------
+RUN set -eux; \
+  mkdir -p /etc/apt/keyrings; \
+  curl -fsSL https://raw.githubusercontent.com/eza-community/eza/main/deb.asc \
+    | gpg --dearmor -o /etc/apt/keyrings/gierens.gpg; \
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/gierens.gpg] https://deb.gierens.de stable main" \
+    > /etc/apt/sources.list.d/gierens.list; \
+  chmod 644 /etc/apt/keyrings/gierens.gpg /etc/apt/sources.list.d/gierens.list; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends eza; \
+  eza --version; \
+  rm -rf /var/lib/apt/lists/*
+
+
+# -----------------------------
 # Rust toolchain (baseline) -> /opt/rust/*
 # - baseline binaries are exposed via /usr/local/bin symlinks
 # - NO global ENV for CARGO_HOME/RUSTUP_HOME at runtime
@@ -188,6 +203,38 @@ if [[ $- == *i* ]] && command -v starship >/dev/null 2>&1; then
 fi
 EOF
 RUN chmod 644 /etc/profile.d/30-stem-starship.sh
+
+
+# -----------------------------
+# Neovim (latest stable release) -> /opt/nvim + /usr/local/bin/nvim
+# -----------------------------
+ARG NVIM_VERSION=
+
+RUN set -eux; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) asset="nvim-linux-x86_64.tar.gz" ;; \
+    arm64) asset="nvim-linux-arm64.tar.gz" ;; \
+    *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+  esac; \
+  if [[ -n "${NVIM_VERSION}" ]]; then \
+    base="https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}"; \
+  else \
+    base="https://github.com/neovim/neovim/releases/latest/download"; \
+  fi; \
+  tmp="$(mktemp -d)"; \
+  curl -fsSL "${base}/${asset}" -o "${tmp}/nvim.tgz"; \
+  tar -xzf "${tmp}/nvim.tgz" -C "${tmp}"; \
+  nvimdir="$(find "${tmp}" -maxdepth 1 -type d -name 'nvim-linux-*' -print -quit)"; \
+  test -n "${nvimdir}"; \
+  rm -rf /opt/nvim; \
+  mv "${nvimdir}" /opt/nvim; \
+  ln -sf /opt/nvim/bin/nvim /usr/local/bin/nvim; \
+  rm -rf "${tmp}"; \
+  nvim --version | head -n 1
+
+
+
 
 # -----------------------------
 # Your existing PATH policy script (unchanged)
