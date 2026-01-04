@@ -58,7 +58,7 @@ RUN set -eux; \
     python3-wheel \
     \
     # nodejs \
-    npm \
+    # npm \
   ; \
   apt-get clean; \
   rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
@@ -165,6 +165,21 @@ RUN set -eux; \
   npm --version; \
   apt-get clean; \
   rm -rf /var/lib/apt/lists/*
+
+# -----------------------------
+# uv (system-wide) -> /usr/local/bin/uv
+# -----------------------------
+ARG UV_VERSION=
+
+RUN set -eux; \
+  if [[ -n "${UV_VERSION}" ]]; then \
+    curl -LsSf "https://astral.sh/uv/${UV_VERSION}/install.sh" | env UV_NO_MODIFY_PATH=1 UV_UNMANAGED_INSTALL="/usr/local/bin" sh; \
+  else \
+    curl -LsSf "https://astral.sh/uv/install.sh" | env UV_NO_MODIFY_PATH=1 UV_UNMANAGED_INSTALL="/usr/local/bin" sh; \
+  fi; \
+  command -v uv; \
+  uv --version
+
 
 # -----------------------------
 # Rust toolchain (baseline) -> /opt/rust/*

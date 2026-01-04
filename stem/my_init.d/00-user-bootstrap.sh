@@ -114,6 +114,9 @@ ensure_user_dirs() {
     # caches (nvim uses this heavily)
     "${HOME_DIR}/.cache"
 
+    # uv/apogee venv root
+    "${APOGEE_UV_VENV_ROOT:-${HOME_DIR}/.venvs}"
+
     # your shell include dir
     "${HOME_DIR}/.bashrc.d"
   )
@@ -154,6 +157,74 @@ ensure_user_dirs() {
   install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.local/state/nvim" || true
   install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.local/share/nvim" || true
   install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.cache/nvim" || true
+}
+
+install_uv_pythons_if_requested() {
+  : "${STEM_UV_PYTHONS:=}"
+  : "${STEM_UV_PYTHON_DIR:=}"
+
+  # Nothing to do unless user asked for versions
+  [[ -z "${STEM_UV_PYTHONS}" ]] && return 0
+
+  # uv should exist (installed in Dockerfile). If not, fail loudly.
+  if ! command -v uv >/dev/null 2>&1; then
+    log "ERROR: uv not found. Did you install uv in the Dockerfile?"
+    return 1
+  fi
+
+  log "Installing uv-managed Python versions for ${STEM_USER}: ${STEM_UV_PYTHONS}"
+
+  sudo -u "${STEM_USER}" -H bash -lc "
+    set -euo pipefail
+
+    # Optional override (otherwise uv uses its default location; uv python dir shows it)
+    if [[ -n \"${STEM_UV_PYTHON_DIR}\" ]]; then
+      export UV_PYTHON_INSTALL_DIR=\"${STEM_UV_PYTHON_DIR}\"
+      mkdir -p \"\${UV_PYTHON_INSTALL_DIR}\"
+    fi
+
+    # Install requested versions (idempotent; already-installed versions are skipped)
+    for v in ${STEM_UV_PYTHONS}; do
+      uv python install \"\$v\"
+    done
+
+    # Helpful visibility in logs
+    uv python dir
+    uv python list
+  "
+}
+
+ensure_uv_managed_python() {
+  # Only do anything if uv exists
+  command -v uv >/dev/null 2>&1 || return 0
+
+  # Respect Apogee’s knob (don’t invent a new one)
+  local want="${APOGEE_UV_DEFAULT_PY:-}"
+  [[ -z "$want" ]] && return 0
+  [[ "$want" == "auto-houdini" ]] && return 0  # container probably has no Houdini anyway
+
+  # Only handle version-like specs here (3.11.7 / 3.11 / 3)
+  if ! [[ "$want" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    return 0
+  fi
+
+  local marker_dir="${HOME_DIR}/.local/state/stem"
+  local marker="${marker_dir}/uv_python_${want}_installed"
+  install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${marker_dir}"
+
+  [[ -f "$marker" ]] && return 0
+
+  log "Installing uv-managed Python ${want} (persisted in home volume)..."
+
+  sudo -u "${STEM_USER}" -H bash -lc "
+    set -euo pipefail
+    uv python install '${want}' --default
+    uv python dir >/dev/null
+    uv python dir --bin >/dev/null
+  "
+
+  date -Iseconds > "$marker"
+  chown "${STEM_UID}:${STEM_GID}" "$marker"
 }
 
 ensure_user_cargo_env() {
@@ -350,9 +421,11 @@ install_authorized_keys() {
 ensure_group_user
 ensure_account_unlocked
 ensure_user_dirs
+ensure_uv_managed_python
 ensure_user_cargo_env
 write_shell_files
 install_bindu_if_requested
+install_uv_pythons_if_requested
 bootstrap_neovim_if_configured
 install_authorized_keys
 

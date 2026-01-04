@@ -4,34 +4,56 @@ services:
       context: .
       dockerfile: image/Dockerfile
 
+    # Lets users rename the container/host without editing compose
     container_name: ${STEM_CONTAINER_NAME:-stem}
     hostname: ${STEM_HOSTNAME:-stem}
 
+    # Load user-provided settings (this is the main config surface)
     env_file:
       - .env
 
+    # SSH into the container (host_port:container_port)
     ports:
       - "${STEM_SSH_PORT:-22222}:22"
 
     environment:
+      # Used by bootstrap to create/repair the user + home ownership
       STEM_USER: "${STEM_USER:-dev}"
       STEM_UID: "${STEM_UID:-1000}"
       STEM_GID: "${STEM_GID:-1000}"
       STEM_PASSWORD: "${STEM_PASSWORD:-change-me}"
 
+      # Optional dotfiles bootstrap into ~/.config
       BINDU_REPO: "${BINDU_REPO:-}"
       BINDU_REF: "${BINDU_REF:-main}"
       BINDU_FORCE: "${BINDU_FORCE:-0}"
 
+      # Override Apogee’s uv default python (numeric only recommended here)
+      APOGEE_UV_DEFAULT_PY: "${APOGEE_UV_DEFAULT_PY:-3.11.7}"
+
     volumes:
+      # Persist /home across rebuilds
       - home:/home/${STEM_USER:-dev}
+
+      # Persist SSH host keys so clients don't see "host key changed" on rebuild
       - sshkeys:/etc/ssh/keys
+
+      # Persist authorized_keys that were injected once
       - sshstate:/opt/stem/ssh
-      - "${STEM_AUTH_KEYS_PATH}:/opt/ssh/authorized_keys:ro"
+
+      # Bind-mount host Dropbox into container so Apogee detects /home/<user>/Dropbox
+      - "${DROPBOX_PATH_ON_HOST}:/home/${STEM_USER:-dev}/Dropbox:rw"
+
+      # Inject a public key (or authorized_keys) from the host at boot
+      - "${STEM_AUTH_KEYS_PATH:-/dev/null}:/opt/ssh/authorized_keys:ro"
 
     restart: unless-stopped
 
 volumes:
+  # These are marked external, so users must create them once:
+  #   docker volume create home
+  #   docker volume create sshkeys
+  #   docker volume create sshstate
   home:
     external: true
   sshkeys:
