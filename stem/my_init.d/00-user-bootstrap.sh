@@ -92,48 +92,65 @@ ensure_account_unlocked() {
   fi
 }
 
+# Recursive chown that:
+# - NEVER descends into $HOME_DIR/Dropbox (bind mount)
+# - Uses -xdev elsewhere to avoid crossing mount points
+safe_chown_tree() {
+  local root="$1"
+
+  # If root doesn't exist, nothing to do
+  [[ -e "${root}" ]] || return 0
+
+  # Always fix the root node itself
+  chown "${STEM_UID}:${STEM_GID}" "${root}" 2>/dev/null || true
+
+  # If root is the home dir, prune Dropbox explicitly
+  if [[ "${root}" == "${HOME_DIR}" ]]; then
+    find "${root}" \
+      -path "${HOME_DIR}/Dropbox" -prune -o \
+      -exec chown -h "${STEM_UID}:${STEM_GID}" {} + \
+      2>/dev/null || true
+  else
+    # Normal recursive chown but don't cross mountpoints
+    find "${root}" -xdev \
+      -exec chown -h "${STEM_UID}:${STEM_GID}" {} + \
+      2>/dev/null || true
+  fi
+}
+
 # Create/repair dirs that matter for user-installed tools + XDG paths
 ensure_user_dirs() {
-  local dirs=(
-    "${HOME_DIR}"
-    "${HOME_DIR}/.ssh"
+  # 1) Fix ONLY the home dir inode (do NOT recurse)
+  chown "${STEM_UID}:${STEM_GID}" "${HOME_DIR}" 2>/dev/null || true
 
-    # cargo (user installs)
+  # 2) Create + fix only safe subdirs (never chown -R $HOME)
+  local dirs=(
+    "${HOME_DIR}/.ssh"
     "${HOME_DIR}/.cargo"
     "${HOME_DIR}/.cargo/bin"
-
-    # config
     "${HOME_DIR}/.config"
-
-    # XDG base dirs (needed by nvim, mason, treesitter, etc.)
     "${HOME_DIR}/.local"
     "${HOME_DIR}/.local/bin"
     "${HOME_DIR}/.local/share"
     "${HOME_DIR}/.local/state"
-
-    # caches (nvim uses this heavily)
     "${HOME_DIR}/.cache"
-
-    # uv/apogee venv root
     "${APOGEE_UV_VENV_ROOT:-${HOME_DIR}/.venvs}"
-
-    # your shell include dir
     "${HOME_DIR}/.bashrc.d"
   )
 
+  local d
   for d in "${dirs[@]}"; do
     if [[ -e "${d}" && ! -d "${d}" ]]; then
-      # Rare edge: file exists where a dir should be. Don't delete, just warn.
       log "WARNING: ${d} exists but is not a directory; skipping."
       continue
     fi
 
     if [[ -d "${d}" ]]; then
-      # If top dir owner differs, repair subtree
+      # If top dir owner differs, repair subtree safely
       local uid_now
       uid_now="$(stat -c '%u' "${d}" 2>/dev/null || echo "")"
       if [[ -n "${uid_now}" && "${uid_now}" != "${STEM_UID}" ]]; then
-        chown -R "${STEM_UID}:${STEM_GID}" "${d}" 2>/dev/null || true
+        safe_chown_tree "${d}"
       fi
 
       # Fix common permission gotchas for key dirs (without being heavy-handed)
@@ -151,9 +168,7 @@ ensure_user_dirs() {
     fi
   done
 
-  # Neovim expects ~/.local/state and will create ~/.local/state/nvim itself,
-  # but ensuring the parent exists + is owned avoids the permission error.
-  # Also create these common nvim dirs so first launch is smoother.
+  # Neovim expects these; ensure they exist + are owned (safe)
   install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.local/state/nvim" || true
   install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.local/share/nvim" || true
   install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${HOME_DIR}/.cache/nvim" || true
@@ -163,10 +178,8 @@ install_uv_pythons_if_requested() {
   : "${STEM_UV_PYTHONS:=}"
   : "${STEM_UV_PYTHON_DIR:=}"
 
-  # Nothing to do unless user asked for versions
   [[ -z "${STEM_UV_PYTHONS}" ]] && return 0
 
-  # uv should exist (installed in Dockerfile). If not, fail loudly.
   if ! command -v uv >/dev/null 2>&1; then
     log "ERROR: uv not found. Did you install uv in the Dockerfile?"
     return 1
@@ -177,33 +190,27 @@ install_uv_pythons_if_requested() {
   sudo -u "${STEM_USER}" -H bash -lc "
     set -euo pipefail
 
-    # Optional override (otherwise uv uses its default location; uv python dir shows it)
     if [[ -n \"${STEM_UV_PYTHON_DIR}\" ]]; then
       export UV_PYTHON_INSTALL_DIR=\"${STEM_UV_PYTHON_DIR}\"
       mkdir -p \"\${UV_PYTHON_INSTALL_DIR}\"
     fi
 
-    # Install requested versions (idempotent; already-installed versions are skipped)
     for v in ${STEM_UV_PYTHONS}; do
       uv python install \"\$v\"
     done
 
-    # Helpful visibility in logs
     uv python dir
     uv python list
   "
 }
 
 ensure_uv_managed_python() {
-  # Only do anything if uv exists
   command -v uv >/dev/null 2>&1 || return 0
 
-  # Respect Apogee’s knob (don’t invent a new one)
   local want="${APOGEE_UV_DEFAULT_PY:-}"
   [[ -z "$want" ]] && return 0
-  [[ "$want" == "auto-houdini" ]] && return 0  # container probably has no Houdini anyway
+  [[ "$want" == "auto-houdini" ]] && return 0
 
-  # Only handle version-like specs here (3.11.7 / 3.11 / 3)
   if ! [[ "$want" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
     return 0
   fi
@@ -245,7 +252,6 @@ EOF
 }
 
 write_shell_files() {
-  # Write to temp then install with correct ownership/perms
   local tmp
 
   tmp="$(mktemp)"
@@ -303,12 +309,10 @@ if [ -d "$HOME/.bashrc.d" ]; then
   done
 fi
 
-# Ensure PATH policy applies even in shells that don't read /etc/profile
 if [ -f /etc/profile.d/99-user-bins-first.sh ]; then
   . /etc/profile.d/99-user-bins-first.sh
 fi
 
-# VM-style cargo PATH
 if [ -f "$HOME/.cargo/env" ]; then
   . "$HOME/.cargo/env"
 fi
@@ -361,17 +365,15 @@ install_bindu_if_requested() {
     date -Iseconds > \"${marker}\"
   "
 
-  chown -R "${STEM_UID}:${STEM_GID}" "${cfg}" 2>/dev/null || true
+  safe_chown_tree "${cfg}"
 }
 
 bootstrap_neovim_if_configured() {
-  # Run once per persisted home volume
   local marker_dir="${HOME_DIR}/.local/state/stem"
   local marker="${marker_dir}/nvim_bootstrapped"
 
   install -d -m 755 -o "${STEM_UID}" -g "${STEM_GID}" "${marker_dir}"
 
-  # Only if nvim exists + config exists + not already done
   command -v nvim >/dev/null 2>&1 || return 0
   [[ -d "${HOME_DIR}/.config/nvim" ]] || return 0
   [[ -f "${marker}" ]] && return 0
@@ -381,7 +383,6 @@ bootstrap_neovim_if_configured() {
   sudo -u "${STEM_USER}" -H bash -lc '
     set -euo pipefail
 
-    # Headless bootstrap that won’t hard-fail if a command isn’t defined
     nvim --headless \
       "+lua if vim.fn.exists(\":Lazy\")==2 then vim.cmd(\"Lazy! sync\") end" \
       "+lua if vim.fn.exists(\":MasonUpdate\")==2 then vim.cmd(\"MasonUpdate\") end" \

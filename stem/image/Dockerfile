@@ -180,7 +180,6 @@ RUN set -eux; \
   command -v uv; \
   uv --version
 
-
 # -----------------------------
 # Rust toolchain (baseline) -> /opt/rust/*
 # - baseline binaries are exposed via /usr/local/bin symlinks
