@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# If invoked under /bin/sh (dash), re-exec under bash before parsing bash syntax.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec /usr/bin/env bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 log() { echo "[stem:init] $*" >&2; }
@@ -134,6 +139,11 @@ ensure_user_dirs() {
     "${HOME_DIR}/.local/share"
     "${HOME_DIR}/.local/state"
     "${HOME_DIR}/.cache"
+    "${HOME_DIR}/.pixi"
+    "${HOME_DIR}/.pixi/bin"
+    "${HOME_DIR}/.pixi/manifests"
+    "${HOME_DIR}/.pixi/envs"
+    "${HOME_DIR}/.pixi/completions"
     "${APOGEE_UV_VENV_ROOT:-${HOME_DIR}/.venvs}"
     "${HOME_DIR}/.bashrc.d"
   )
@@ -368,6 +378,94 @@ install_bindu_if_requested() {
   safe_chown_tree "${cfg}"
 }
 
+install_apogee_secrets_if_injected() {
+  local injected="/opt/secrets/apogee-secrets.env"
+  local target_dir="${HOME_DIR}/.config/apogee"
+  local target="${target_dir}/secrets.env"
+
+  [[ -f "${injected}" && -s "${injected}" ]] || return 0
+
+  install -d -m 700 -o "${STEM_UID}" -g "${STEM_GID}" "${target_dir}"
+
+  # Only write if missing (don’t overwrite silently)
+  if [[ ! -f "${target}" ]]; then
+    log "Installing apogee secrets.env (one-time) -> ${target}"
+    install -m 600 -o "${STEM_UID}" -g "${STEM_GID}" "${injected}" "${target}"
+  else
+    log "apogee secrets.env already exists; leaving as-is."
+  fi
+}
+
+install_pixi_if_missing() {
+  : "${STEM_PIXI_ENABLE:=1}"
+  [[ "${STEM_PIXI_ENABLE}" == "1" ]] || { log "STEM_PIXI_ENABLE!=1; skipping pixi install."; return 0; }
+
+  # Already installed for this user?
+  if sudo -u "${STEM_USER}" -H bash -lc 'test -x "$HOME/.pixi/bin/pixi"'; then
+    return 0
+  fi
+
+  log "Installing pixi for ${STEM_USER} (user-local ~/.pixi)..."
+
+  sudo -u "${STEM_USER}" -H bash -lc '
+    set -euo pipefail
+    curl -fsSL https://pixi.sh/install.sh | env PIXI_NO_PATH_UPDATE=1 sh
+    test -x "$HOME/.pixi/bin/pixi"
+  '
+}
+
+configure_pixi_host_if_present() {
+  : "${STEM_PIXI_ENABLE:=1}"
+  [[ "${STEM_PIXI_ENABLE}" == "1" ]] || return 0
+
+  # Control whether we attempt stow at all
+  : "${STEM_PIXI_STOW:=auto}"   # auto|0|1
+  [[ "${STEM_PIXI_STOW}" == "0" ]] && { log "STEM_PIXI_STOW=0; skipping stow."; return 0; }
+
+  # Pick host folder name:
+  # - If you want "container name", the reliable path is: set this env var, OR set container hostname.
+  # - Default: hostname -s (works if you set `hostname:` in compose or `--hostname` in docker run)
+  local host
+  host="${STEM_PIXI_HOST:-}"
+  if [[ -z "${host}" ]]; then
+    host="${STEM_HOSTNAME:-}"
+  fi
+  if [[ -z "${host}" ]]; then
+    host="$(hostname -s 2>/dev/null || true)"
+  fi
+  host="${host:-stem}"
+
+  local hosts_root="${HOME_DIR}/.config/pixi/hosts"
+  local host_dir="${hosts_root}/${host}"
+
+  if [[ ! -d "${host_dir}" ]]; then
+    log "No pixi host config found at ${host_dir}; leaving pixi defaults."
+    return 0
+  fi
+
+  log "Found pixi host config: ${host_dir} -> stowing into ${HOME_DIR}"
+
+  sudo -u "${STEM_USER}" -H bash -lc "
+    set -euo pipefail
+    command -v stow >/dev/null 2>&1 || exit 0
+    mkdir -p \"\$HOME/.pixi/manifests\"
+    stow -d \"${hosts_root}\" -t \"\$HOME\" -R \"${host}\" || true
+  "
+
+  # Optional: run global sync (OFF by default)
+  : "${STEM_PIXI_GLOBAL_SYNC:=0}"
+  if [[ "${STEM_PIXI_GLOBAL_SYNC}" == "1" ]]; then
+    log "Running: pixi global sync"
+    sudo -u "${STEM_USER}" -H bash -lc '
+      set -euo pipefail
+      pixi global sync
+    ' || log "pixi global sync failed (non-fatal)."
+  else
+    log "pixi host stow complete. Run: pixi global sync"
+  fi
+}
+
+
 bootstrap_neovim_if_configured() {
   local marker_dir="${HOME_DIR}/.local/state/stem"
   local marker="${marker_dir}/nvim_bootstrapped"
@@ -394,6 +492,42 @@ bootstrap_neovim_if_configured() {
   date -Iseconds > "${marker}"
   chown "${STEM_UID}:${STEM_GID}" "${marker}"
 }
+
+
+configure_ssh_agent_env() {
+  # If compose didn't set SSH_AUTH_SOCK, nothing to do.
+  [[ -n "${SSH_AUTH_SOCK:-}" ]] || return 0
+
+  # If it's not a socket, unset it to avoid confusing ssh/git.
+  if [[ ! -S "${SSH_AUTH_SOCK}" ]]; then
+    log "SSH_AUTH_SOCK is set but is not a socket; unsetting."
+    unset SSH_AUTH_SOCK
+    return 0
+  fi
+
+  log "SSH agent socket detected at ${SSH_AUTH_SOCK}"
+}
+
+install_ssh_agent_snippet() {
+  local f="${HOME_DIR}/.bashrc.d/20-ssh-agent.sh"
+  local tmp
+  tmp="$(mktemp)"
+
+  cat > "${tmp}" <<'EOF'
+# ssh-agent plumbing (stem)
+# Prefer SSH-forwarded agent (set by sshd) if present.
+# Otherwise fall back to a host-mounted agent at /ssh-agent if it exists.
+if [[ -z "${SSH_AUTH_SOCK:-}" ]]; then
+  if [[ -S /ssh-agent ]]; then
+    export SSH_AUTH_SOCK=/ssh-agent
+  fi
+fi
+EOF
+
+  install -m 0644 -o "${STEM_UID}" -g "${STEM_GID}" "${tmp}" "${f}"
+  rm -f "${tmp}"
+}
+
 
 install_authorized_keys() {
   local persist_dir="/opt/stem/ssh"
@@ -422,12 +556,20 @@ install_authorized_keys() {
 ensure_group_user
 ensure_account_unlocked
 ensure_user_dirs
+install_ssh_agent_snippet
 ensure_uv_managed_python
 ensure_user_cargo_env
 write_shell_files
+
 install_bindu_if_requested
+install_apogee_secrets_if_injected
+
+install_pixi_if_missing
+configure_pixi_host_if_present
+
 install_uv_pythons_if_requested
 bootstrap_neovim_if_configured
 install_authorized_keys
+configure_ssh_agent_env
 
 exit 0

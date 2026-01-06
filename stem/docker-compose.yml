@@ -1,8 +1,6 @@
 services:
   stem:
-    build:
-      context: .
-      dockerfile: image/Dockerfile
+    image: ${STEM_IMAGE:-suhailphotos/stem:latest}
 
     # Lets users rename the container/host without editing compose
     container_name: ${STEM_CONTAINER_NAME:-stem}
@@ -23,6 +21,12 @@ services:
       STEM_GID: "${STEM_GID:-1000}"
       STEM_PASSWORD: "${STEM_PASSWORD:-change-me}"
 
+      # pixi behavior (defaults)
+      STEM_PIXI_HOST: "${STEM_HOSTNAME:-stem}"
+      STEM_PIXI_ENABLE: "${STEM_PIXI_ENABLE:-1}"            # install pixi if missing
+      STEM_PIXI_STOW: "${STEM_PIXI_STOW:-auto}"             # auto|0|1
+      STEM_PIXI_GLOBAL_SYNC: "${STEM_PIXI_GLOBAL_SYNC:-0}"  # run `pixi global sync` on boot (off by default)
+
       # Optional dotfiles bootstrap into ~/.config
       BINDU_REPO: "${BINDU_REPO:-}"
       BINDU_REF: "${BINDU_REF:-main}"
@@ -42,21 +46,20 @@ services:
       - sshstate:/opt/stem/ssh
 
       # Bind-mount host Dropbox into container so Apogee detects /home/<user>/Dropbox
-      - "${DROPBOX_PATH_ON_HOST}:/home/${STEM_USER:-dev}/Dropbox:rw"
+      - "${DROPBOX_PATH_ON_HOST:-/dev/null}:/home/${STEM_USER:-dev}/Dropbox:rw"
 
       # Inject a public key (or authorized_keys) from the host at boot
       - "${STEM_AUTH_KEYS_PATH:-/dev/null}:/opt/ssh/authorized_keys:ro"
 
+      # Optional: forward host SSH agent socket into container
+      - "${STEM_SSH_AUTH_SOCK_HOST:-/dev/null}:/ssh-agent"
+
+      # Copy apogee-secrets from host
+      - "${APOGEE_SECRETS_PATH:-/dev/null}:/opt/secrets/apogee-secrets.env:ro"
+
     restart: unless-stopped
 
 volumes:
-  # These are marked external, so users must create them once:
-  #   docker volume create home
-  #   docker volume create sshkeys
-  #   docker volume create sshstate
-  home:
-    external: true
-  sshkeys:
-    external: true
-  sshstate:
-    external: true
+  home: {}
+  sshkeys: {}
+  sshstate: {}

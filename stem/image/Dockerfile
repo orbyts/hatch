@@ -23,6 +23,8 @@ RUN set -eux; \
     gpg \
     debsig-verify \
     ncurses-term \
+    xz-utils \
+    bzip2 \
     ncurses-bin \
     \
     stow \
@@ -267,7 +269,21 @@ RUN set -eux; \
   rm -rf "${tmp}"; \
   nvim --version | head -n 1
 
-
+# -----------------------------
+# Pixi PATH (user-local)
+# -----------------------------
+RUN set -eux; \
+  cat >/etc/profile.d/40-pixi.sh <<'EOF'
+# Add pixi to PATH if installed in the user's home
+if [ -n "${HOME:-}" ] && [ -d "$HOME/.pixi/bin" ]; then
+  case ":$PATH:" in
+    *":$HOME/.pixi/bin:"*) ;;
+    *) PATH="$HOME/.pixi/bin:$PATH" ;;
+  esac
+fi
+export PATH
+EOF
+RUN chmod 644 /etc/profile.d/40-pixi.sh
 
 
 # -----------------------------
