@@ -1,0 +1,13 @@
+numpy
+h5py
+scikit-learn
+pandas
+matplotlib
+graphviz
+scipy
+numba
+cupy-cuda12x
+
+# fast dataframe stack
+polars
+pyarrow

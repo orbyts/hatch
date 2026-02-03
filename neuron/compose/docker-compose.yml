@@ -1,0 +1,76 @@
+services:
+  neuron:
+    image: ${NEURON_IMAGE:-suhailphotos/neuron-cuda-lite:latest}
+
+    container_name: ${NEURON_CONTAINER_NAME:-neuron}
+    hostname: ${NEURON_HOSTNAME:-neuron}
+
+    env_file:
+      - .env
+
+    ports:
+      - "${NEURON_SSH_PORT:-22223}:22"
+
+    # GPU access
+    gpus: ${NEURON_GPUS:-all}
+
+    environment:
+      # Used by stem bootstrap to create/repair the user + home ownership
+      STEM_USER: "${STEM_USER:-dev}"
+      STEM_UID: "${STEM_UID:-1000}"
+      STEM_GID: "${STEM_GID:-1000}"
+      STEM_PASSWORD: "${STEM_PASSWORD:-change-me}"
+
+      # pixi behavior
+      STEM_PIXI_HOST: "${NEURON_HOSTNAME:-neuron}"
+      STEM_PIXI_ENABLE: "${STEM_PIXI_ENABLE:-1}"
+      STEM_PIXI_STOW: "${STEM_PIXI_STOW:-auto}"
+      STEM_PIXI_GLOBAL_SYNC: "${STEM_PIXI_GLOBAL_SYNC:-0}"
+
+      # Optional dotfiles bootstrap into ~/.config
+      BINDU_REPO: "${BINDU_REPO:-}"
+      BINDU_REF: "${BINDU_REF:-main}"
+      BINDU_FORCE: "${BINDU_FORCE:-0}"
+
+      # uv default python
+      APOGEE_UV_DEFAULT_PY: "${APOGEE_UV_DEFAULT_PY:-3.11.7}"
+
+      # NVIDIA runtime hints (optional but fine)
+      NVIDIA_VISIBLE_DEVICES: "${NVIDIA_VISIBLE_DEVICES:-all}"
+      NVIDIA_DRIVER_CAPABILITIES: "${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}"
+
+    volumes:
+      # Persist /home across rebuilds (NEURON-SPECIFIC VOLUME)
+      - neuron_home:/home/${STEM_USER:-dev}
+
+      # Persist SSH host keys so clients don't see "host key changed" on rebuild (NEURON-SPECIFIC)
+      - neuron_sshkeys:/etc/ssh/keys
+
+      # Persist authorized_keys that were injected once (NEURON-SPECIFIC)
+      - neuron_sshstate:/opt/stem/ssh
+
+      # Bind-mount host Dropbox into container
+      - "${DROPBOX_PATH_ON_HOST}:/home/${STEM_USER:-dev}/Dropbox:rw"
+
+      # Inject a public key (or authorized_keys) from the host at boot
+      - "${STEM_AUTH_KEYS_PATH:-/dev/null}:/opt/ssh/authorized_keys:ro"
+
+      # Optional: forward host SSH agent socket into container
+      - "${STEM_SSH_AUTH_SOCK_HOST:-/dev/null}:/ssh-agent"
+
+      # Copy apogee-secrets from host
+      - "${APOGEE_SECRETS_PATH:-/dev/null}:/opt/secrets/apogee-secrets.env:ro"
+
+    restart: unless-stopped
+
+volumes:
+  # External volumes, neuron-specific. Create once:
+  #   docker volume create neuron_home
+  #   docker volume create neuron_sshkeys
+  #   docker volume create neuron_sshstate
+  neuron_home:
+    external: true
+  neuron_sshkeys:
+    external: true
+  neuron_sshstate:
+    external: true
