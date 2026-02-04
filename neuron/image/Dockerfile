@@ -1,5 +1,5 @@
 # neuron (cuda-lite) builds on your stem "dev OS"
-FROM suhailphotos/stem:latest
+FROM suhailphotos/stem:0.1.1
 
 ARG DEBIAN_FRONTEND=noninteractive
 
