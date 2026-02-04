@@ -37,6 +37,7 @@ RUN set -eux; \
     wl-clipboard \
     xsel \
     file \
+    rsync \
     fd-find \
     ripgrep \
     fzf \

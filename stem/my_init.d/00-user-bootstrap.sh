@@ -11,6 +11,7 @@ log() { echo "[stem:init] $*" >&2; }
 : "${STEM_USER:=suhail}"
 : "${STEM_UID:=1000}"
 : "${STEM_GID:=1000}"
+: "${STEM_SUPP_GIDS:=}"
 
 HOME_DIR="/home/${STEM_USER}"
 SSH_DIR="${HOME_DIR}/.ssh"
@@ -75,6 +76,41 @@ ensure_group_user() {
   usermod -aG sudo "${STEM_USER}" || true
   install -m 0440 /dev/null "/etc/sudoers.d/${STEM_USER}"
   printf '%s ALL=(ALL) NOPASSWD:ALL\n' "${STEM_USER}" > "/etc/sudoers.d/${STEM_USER}"
+}
+
+add_user_to_gid() {
+  local user="$1"
+  local gid="$2"
+
+  # Find group name for this gid (if any)
+  local grp
+  grp="$(getent group "${gid}" | cut -d: -f1 || true)"
+
+  # If no group exists with this gid, create a stable one
+  if [[ -z "${grp}" ]]; then
+    grp="hostgid${gid}"
+    groupadd -g "${gid}" "${grp}" || true
+  fi
+
+  # Add user to that group (idempotent)
+  usermod -aG "${grp}" "${user}" || true
+}
+
+ensure_supplemental_groups() {
+  local user="${STEM_USER}"
+
+  [[ -n "${STEM_SUPP_GIDS}" ]] || return 0
+
+  log "Applying supplemental gids for ${user}: ${STEM_SUPP_GIDS}"
+
+  local gid
+  for gid in ${STEM_SUPP_GIDS}; do
+    [[ "${gid}" =~ ^[0-9]+$ ]] || { log "Skipping non-numeric gid: ${gid}"; continue; }
+    add_user_to_gid "${user}" "${gid}"
+  done
+
+  log "Groups for ${user}:"
+  id "${user}" || true
 }
 
 ensure_account_unlocked() {
@@ -554,6 +590,7 @@ install_authorized_keys() {
 }
 
 ensure_group_user
+ensure_supplemental_groups
 ensure_account_unlocked
 ensure_user_dirs
 install_ssh_agent_snippet

@@ -1,30 +1,69 @@
-# stem (ssh dev container)
+# hatch: stem + neuron (ssh dev containers)
 
-`stem` is a portable Ubuntu-based dev container you can SSH into. It bootstraps a normal user, supports persistent home volumes, and can optionally:
-- install **pixi** and apply a host-specific pixi global manifest via stow
-- bootstrap **bindu** (dotfiles) into `~/.config`
-- inject SSH `authorized_keys` at first boot
-- optionally mount an SSH agent socket from the Docker host
-- optionally mount **apogee** `secrets.env` into the container (your secrets stay off the image)
+This repo builds two related images:
 
-This repo ships a **public template**: `stem/docker-compose.yml` + `stem/.env.example`.
-You copy `.env.example` → `.env`, adjust paths, and run `docker compose up -d`.
+- **stem**: a portable Ubuntu-based dev container you can SSH into.
+- **neuron**: a GPU-capable “workbench” container that builds on the same bootstrap pattern (and often the stem base).
 
-> Notes:
-> - Your `.env` is intentionally not tracked.
-> - This README assumes you run Docker on Linux, but macOS works too if paths are updated.
+Both containers are designed around a simple idea:
+
+- **the container starts as root** (so init can do privileged setup safely)
+- **a normal user is created/normalized on boot** using `STEM_USER`, `STEM_UID`, `STEM_GID`
+- **your home lives on a volume** so it survives rebuilds
+- you can optionally mount host folders (Dropbox, project dirs, etc.) without fighting permissions
+
+> This README is intentionally **general**.
+> Host-specific mounts (like your NFS / VirtIO-FS shares) belong in per-host docs under
+> `$DOCKER/services/<host>/{stem,neuron}/README.md`.
 
 ---
 
 ## What you get
 
+### stem
+
 - Ubuntu (phusion baseimage) with SSH enabled (port exposed via compose)
-- A user created/normalized at boot (`STEM_USER`, `STEM_UID`, `STEM_GID`)
+- Boot-time user creation/normalization (`STEM_USER`, `STEM_UID`, `STEM_GID`)
 - Persistent `/home/<user>` volume (survives rebuilds)
 - Persistent SSH host keys (so clients don’t see “host key changed”)
 - Optional Dropbox bind mount into `/home/<user>/Dropbox`
-- Optional `bindu` install into `~/.config`
-- Optional `pixi` install + host config stow + optional `pixi global sync`
+- Optional dotfiles bootstrap (bindu) into `~/.config`
+- Optional Pixi install + host config stow + optional `pixi global sync`
+- Optional Apogee secrets injection into `~/.config/apogee/secrets.env`
+
+### neuron
+
+- Everything above (same bootstrap philosophy)
+- GPU access via Docker’s `gpus:` stanza (when supported on the Docker host)
+- A place to mount your ML workspace paths consistently (projects/datasets/models/etc.)
+- Designed to run long-lived and be reachable via SSH like stem
+
+---
+
+## Why UID/GID mapping matters
+
+If you bind-mount host paths into a container (Dropbox, repos, NFS shares, VirtIO-FS mounts, etc.),
+Linux permissions are still enforced.
+
+The most reliable pattern is:
+
+- Keep the container’s “real” user **numerically identical** to your host user (UID/GID)
+- For shared folders, manage access via groups (GID) and setgid directories where appropriate
+
+That’s why stem/neuron take:
+
+- `STEM_UID` (default `1000`)
+- `STEM_GID` (default `1000`)
+
+At boot, the init script will:
+
+1. ensure the group with `STEM_GID` exists
+2. ensure the user with `STEM_UID` exists
+3. ensure the user’s **primary group** is `STEM_GID`
+4. repair ownership for a curated set of safe home subdirectories (without `chown -R $HOME`)
+
+This makes mounts “just work” when you keep your host user at `1000:1000` (typical on Ubuntu),
+and avoids permission pain for future mounts.
 
 ---
 
@@ -32,15 +71,20 @@ You copy `.env.example` → `.env`, adjust paths, and run `docker compose up -d`
 
 Relevant paths:
 
-- `stem/image/Dockerfile` — base image build
-- `stem/my_init.d/00-user-bootstrap.sh` — main bootstrap logic (user creation, optional hooks)
+- `stem/image/Dockerfile` — stem image build
+- `stem/my_init.d/00-user-bootstrap.sh` — user/bootstrap logic (user creation + optional hooks)
 - `stem/my_init.d/01-ssh-hostkeys.sh` — persistent SSH host keys generation
 - `stem/docker-compose.yml` — public compose template
 - `stem/.env.example` — public env template
 
+Neuron equivalents:
+
+- `neuron/image/Dockerfile`
+- `neuron/compose/docker-compose.yml`
+
 ---
 
-## Quick start (template)
+## Quick start: stem (template)
 
 ### 1) Copy `.env.example` → `.env`
 
@@ -55,8 +99,8 @@ Edit `.env` to match your machine (paths + UID/GID).
 
 ### 2) Create volumes (first time only)
 
-If your compose uses named volumes, Docker will create them automatically.
-If you’re using external volumes in your local deployment, create them once:
+If your compose uses named volumes, Docker may create them automatically.
+If you’re using **external volumes** (recommended for rebuild safety), create them once:
 
 ```bash
 docker volume create home
@@ -81,13 +125,30 @@ Default SSH port is `22222` (configurable):
 ssh -p 22222 dev@<docker-host-ip>
 ```
 
-If you mounted `authorized_keys`, you should be able to login immediately.
+If you injected `authorized_keys`, you should be able to login immediately.
 
 ---
 
-## Configuration
+## Quick start: neuron (template)
 
-All configuration is driven by `.env` + `docker-compose.yml`.
+Neuron’s compose lives under `neuron/compose/`. The pattern is the same:
+
+1. copy a `.env`
+2. create required external volumes (if used)
+3. bring it up with Docker Compose
+4. SSH in
+
+GPU hosts typically require:
+
+- NVIDIA drivers installed on the host
+- the NVIDIA container runtime configured
+- your Docker version supporting the `gpus:` stanza
+
+---
+
+## Configuration surface
+
+Everything is driven by `.env` + `docker-compose.yml`.
 
 ### Core identity
 
@@ -100,16 +161,16 @@ All configuration is driven by `.env` + `docker-compose.yml`.
 - `STEM_USER` — username inside container (default `dev`)
 - `STEM_UID`, `STEM_GID` — numeric IDs (recommended: match your host user)
 
-Why it matters: if you mount host folders into `/home/<user>`, matching UID/GID prevents permission pain.
+If you mount host folders into `/home/<user>` or elsewhere, matching UID/GID prevents permission pain.
 
 ### SSH authorized keys injection (recommended)
 
-Set `STEM_AUTH_KEYS_PATH` to a file on the Docker host, mounted read-only into the container at boot:
+Set `STEM_AUTH_KEYS_PATH` to a file on the Docker host, mounted read-only into the container:
 
 - a public key file (e.g. `~/.ssh/id_ed25519.pub`)
 - or an `authorized_keys` file
 
-The bootstrap persists it into the `sshstate` volume so it survives rebuilds.
+On first boot, the bootstrap persists it into the `sshstate` volume so it survives rebuilds.
 
 ### Dropbox bind mount (optional)
 
@@ -118,17 +179,52 @@ Set `DROPBOX_PATH_ON_HOST` if you want host Dropbox mounted into the container:
 - Linux example: `/home/<you>/Dropbox`
 - macOS example: `/Users/<you>/Library/CloudStorage/Dropbox`
 
-If unset, the mount will resolve to `/dev/null` in the public template and be effectively disabled.
+If unset, your compose can map `/dev/null` instead to effectively disable the mount.
 
 ### Bindu (dotfiles) bootstrap (optional)
 
-If you want the container to clone/copy your dotfiles repo into `~/.config` on first boot:
+If you want the container to clone/copy your dotfiles repo into `~/.config`:
 
-- `BINDU_REPO` — https repo url (recommended for public usage)
+- `BINDU_REPO` — HTTPS repo URL
 - `BINDU_REF` — branch/tag (default `main`)
 - `BINDU_FORCE` — set `1` to overwrite an existing non-empty `~/.config`
 
 If `BINDU_REPO` is empty, bindu bootstrap is skipped.
+
+#### Keeping bindu up to date later
+
+The first-boot bootstrap is intentionally conservative (it won’t overwrite a non-empty `~/.config` by default).
+If you want to update later, you have two safe patterns:
+
+**A) Re-run bootstrap with force** (simple, but overwrites `~/.config`):
+
+```bash
+# On the Docker host, in your .env:
+# BINDU_FORCE=1
+docker compose restart
+```
+
+**B) Update only a specific subtree using rsync** (recommended)
+
+Stem includes `rsync` (v0.1.2+), so you can update just the portion you care about.
+Example: update only `~/.config/apogee` from your bindu repo:
+
+```bash
+docker exec -it stem bash -lc '
+  set -euo pipefail
+  u="${STEM_USER:-dev}"
+  su - "$u" -c "
+    set -euo pipefail
+    tmp=\$(mktemp -d)
+    git clone --depth=1 --branch "${BINDU_REF:-main}" "${BINDU_REPO}" "\$tmp"
+    mkdir -p "\$HOME/.config/apogee"
+    rsync -a --delete "\$tmp/apogee/" "\$HOME/.config/apogee/"
+    rm -rf "\$tmp"
+  "
+'
+```
+
+> In a future version (planned), we’ll make “update-only” behavior a first-class command/hook.
 
 ### Pixi (optional)
 
@@ -145,11 +241,12 @@ Environment flags:
 - `STEM_PIXI_GLOBAL_SYNC` — `1` runs `pixi global sync` during boot (default `0`)
 
 Host selection logic (typical):
+
 - Prefer `STEM_PIXI_HOST` (if set)
 - Else use `STEM_HOSTNAME`
 - Else `hostname -s`
 
-Tip: set `hostname: stem` in compose and keep a `hosts/stem/` folder for pixi.
+Tip: set `hostname:` in compose and keep a matching `hosts/<hostname>/` folder for pixi.
 
 ### Apogee secrets (optional)
 
@@ -158,7 +255,7 @@ If you use Apogee and want `~/.config/apogee/secrets.env` available inside the c
 - Set `APOGEE_SECRETS_PATH` in `.env` to a file on the Docker host
 - It will be mounted read-only at `/opt/secrets/apogee-secrets.env`
 
-Your bootstrap can copy it into `~/.config/apogee/secrets.env` **only when present**.
+The bootstrap copies it into `~/.config/apogee/secrets.env` only when present (and doesn’t overwrite silently).
 
 This keeps secrets off the image and out of the repo.
 
@@ -166,40 +263,30 @@ This keeps secrets off the image and out of the repo.
 
 ## SSH agent forwarding (optional)
 
-There are two different “agent” concepts people mix up:
-
-1) **Your laptop/client SSH agent** (the machine you type `ssh ...` from)
-2) **The Docker host’s SSH agent** (the machine actually running Docker)
-
 A Docker container can only mount sockets from the **Docker host**, not from your remote client.
+
 So agent forwarding into the container works like this:
 
-- You run Docker on host `vortex`
+- Docker runs on host `vortex`
 - You mount `vortex`’s `SSH_AUTH_SOCK` into the container (a socket file)
 - Inside the container, `SSH_AUTH_SOCK=/ssh-agent` points at that mounted socket
 
-This enables GitHub pushes/pulls from inside the container *using keys loaded on the Docker host agent*.
+This enables GitHub pushes/pulls from inside the container using keys loaded in the Docker host’s agent.
 
-### Requirements
-
-On the Docker host (the machine running Docker):
+On the Docker host:
 
 ```bash
 echo "$SSH_AUTH_SOCK"
 test -S "$SSH_AUTH_SOCK" && echo ok
 ```
 
-If you see `ok`, you can mount it into the container.
-
-### How to enable
-
-In your `.env` on the Docker host:
+If you see `ok`, set in `.env`:
 
 ```dotenv
 STEM_SSH_AUTH_SOCK_HOST=/path/to/host/agent.sock
 ```
 
-And in compose the mount is:
+And mount in compose:
 
 ```yaml
 - "${STEM_SSH_AUTH_SOCK_HOST:-/dev/null}:/ssh-agent"
@@ -211,11 +298,6 @@ Inside the container, set:
 environment:
   SSH_AUTH_SOCK: /ssh-agent
 ```
-
-> If you SSH into the Docker host from your laptop and use SSH agent forwarding (`ssh -A`),
-> the Docker host may have an agent socket available that represents your laptop keys.
-> That can indirectly make your laptop keys usable *on the Docker host* and therefore usable by the container.
-> This part depends on your host SSH configuration and is outside the container’s control.
 
 ---
 
@@ -233,7 +315,7 @@ docker logs stem
 docker compose restart
 ```
 
-### Rebuild image locally (dev)
+### Rebuild locally (dev)
 
 From `stem/`:
 
@@ -242,26 +324,37 @@ docker compose build --no-cache
 docker compose up -d
 ```
 
-### Verify pixi config
-
-Inside the container:
+### Sanity checks inside the container
 
 ```bash
-ls -la ~/.pixi/manifests
-pixi global sync
+id
+getent passwd "$STEM_USER"
+ls -la "$HOME"
 ```
 
 ---
 
-## Security notes
+## Image build + publish workflow (reference)
 
-- Do not commit `.env` or any secrets file.
-- Prefer `authorized_keys` injection or host-agent forwarding over copying private keys into the container.
-- If you mount an SSH agent socket into a container, processes in the container may be able to use that agent.
-  Treat this as equivalent to granting access to the keys loaded in that agent.
+Example for stem:
+
+```bash
+cd "$MATRIX/hatch/stem"
+
+docker build -f image/Dockerfile \
+  -t suhailphotos/stem:0.1.2 \
+  -t suhailphotos/stem:latest \
+  .
+
+docker push suhailphotos/stem:0.1.2
+docker push suhailphotos/stem:latest
+```
+
+Neuron follows the same idea.
 
 ---
 
-## license
+## License
 
 MIT
+
